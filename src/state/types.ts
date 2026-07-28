@@ -1,10 +1,3 @@
-export interface WordBankEntry {
-  id: string;
-  answer: string;
-  clue: string;
-  category: string;
-}
-
 export interface PlacedEntry {
   wordId: string;
   number: number;
@@ -13,6 +6,7 @@ export interface PlacedEntry {
   col: number;
   length: number;
   cellRefs: { row: number; col: number }[];
+  clue: string;
 }
 
 export interface Puzzle {
@@ -23,8 +17,26 @@ export interface Puzzle {
   cellIndex: Record<string, string[]>;
 }
 
-export interface Manifest {
-  puzzleIds: string[];
+export interface RevealedCell {
+  row: number;
+  col: number;
+  letter: string;
+}
+
+export interface Progress {
+  solvedEntryIds: string[];
+  revealedCells: RevealedCell[];
+}
+
+export interface RoomState {
+  roomId: string;
+  puzzle: Puzzle;
+  progress: Progress;
+}
+
+export interface SubmitResult {
+  correct: boolean;
+  revealedCells?: RevealedCell[];
 }
 
 export interface Rect {

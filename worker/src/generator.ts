@@ -1,74 +1,26 @@
-#!/usr/bin/env node
-// Genera N puzzles estáticos de crucigrama futbolero. Corre en build time, sin deps externas.
-// Uso: node scripts/generate-puzzles.mjs [--count=10] [--out=public/puzzles] [--bank=data/word-bank.json]
+// Puerto de scripts/generate-puzzles.mjs para correr en el Worker en vez de en build time.
+// La lógica de subset selection + grid placement es la misma; se le sacó todo lo que dependía
+// de fs/argv/proceso (loadWordBank de disco, CLI, escritura a archivo) y la comparación Jaccard
+// entre puzzles (subsetIsDiverseEnough) — esa lógica existía para mantener 10 puzzles estáticos
+// distinguibles entre sí dentro de un pool fijo; no aplica cuando cada sala genera un único
+// puzzle aislado, sin compararlo contra ningún otro.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+import type { StructuralEntry, StructuralPuzzle, WordBankEntry } from './types';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '..');
-
-function parseArgs(argv) {
-  const args = { count: 10, out: 'public/puzzles', bank: 'data/word-bank.json' };
-  for (const raw of argv) {
-    const m = raw.match(/^--([\w-]+)=(.*)$/);
-    if (!m) continue;
-    const [, key, value] = m;
-    if (key === 'count') args.count = parseInt(value, 10);
-    else if (key === 'out') args.out = value;
-    else if (key === 'bank') args.bank = value;
-  }
-  return args;
-}
-
-const args = parseArgs(process.argv.slice(2));
 const MIN_SUBSET = 15;
 const MAX_SUBSET = 20;
-const JACCARD_THRESHOLD = 0.4;
 const SUBSET_ATTEMPTS_PER_PUZZLE = 200;
 const PLACEMENT_ATTEMPTS_PER_SUBSET = 20;
 const MIN_ENTRIES_IN_PUZZLE = 10;
 
-function fail(message) {
-  console.error(`[generate-puzzles] ERROR: ${message}`);
-  process.exit(1);
-}
-
-function loadWordBank(bankPath) {
-  const abs = path.resolve(repoRoot, bankPath);
-  if (!existsSync(abs)) fail(`no se encontró el banco de palabras en ${abs}`);
-  let bank;
-  try {
-    bank = JSON.parse(readFileSync(abs, 'utf-8'));
-  } catch (e) {
-    fail(`banco de palabras no es JSON válido: ${e.message}`);
-  }
-  if (!Array.isArray(bank) || bank.length < MIN_SUBSET) {
-    fail(`banco de palabras insuficiente (necesita al menos ${MIN_SUBSET} entradas, tiene ${bank?.length ?? 0})`);
-  }
-  const seen = new Set();
-  for (const entry of bank) {
-    if (!entry.id || !entry.answer || !entry.clue) {
-      fail(`entrada inválida en el banco: ${JSON.stringify(entry)}`);
-    }
-    if (seen.has(entry.id)) fail(`id duplicado en el banco: ${entry.id}`);
-    seen.add(entry.id);
-    if (!/^[A-Z]+$/.test(entry.answer)) {
-      fail(`respuesta "${entry.answer}" (id ${entry.id}) debe estar normalizada: MAYÚSCULAS A-Z sin espacios ni tildes`);
-    }
-  }
-  return bank;
-}
-
-function randomInt(min, max) {
+function randomInt(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
-function sampleSubset(bank) {
+function sampleSubset(bank: WordBankEntry[]): WordBankEntry[] {
   const size = randomInt(MIN_SUBSET, Math.min(MAX_SUBSET, bank.length));
   const pool = [...bank];
-  const picked = [];
+  const picked: WordBankEntry[] = [];
   for (let i = 0; i < size; i++) {
     const idx = randomInt(0, pool.length - 1);
     picked.push(pool[idx]);
@@ -77,26 +29,9 @@ function sampleSubset(bank) {
   return picked;
 }
 
-function jaccard(setA, setB) {
-  let intersection = 0;
-  for (const id of setA) if (setB.has(id)) intersection++;
-  const union = setA.size + setB.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
+const key = (r: number, c: number) => `${r},${c}`;
 
-function subsetIsDiverseEnough(subset, acceptedIdSets) {
-  const ids = new Set(subset.map((w) => w.id));
-  for (const prev of acceptedIdSets) {
-    if (jaccard(ids, prev) > JACCARD_THRESHOLD) return false;
-  }
-  return true;
-}
-
-// --- Etapa 2: colocación en grilla ---
-
-const key = (r, c) => `${r},${c}`;
-
-function shuffle(arr) {
+function shuffle<T>(arr: T[]): T[] {
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i--) {
     const j = randomInt(0, i);
@@ -106,20 +41,35 @@ function shuffle(arr) {
 }
 
 // Ordena de mayor a menor longitud; dentro del mismo largo, orden aleatorio (varía entre intentos).
-function orderWords(words) {
-  const byLength = new Map();
+function orderWords(words: WordBankEntry[]): WordBankEntry[] {
+  const byLength = new Map<number, WordBankEntry[]>();
   for (const w of words) {
     const len = w.answer.length;
     if (!byLength.has(len)) byLength.set(len, []);
-    byLength.get(len).push(w);
+    byLength.get(len)!.push(w);
   }
   const lengths = [...byLength.keys()].sort((a, b) => b - a);
-  const ordered = [];
-  for (const len of lengths) ordered.push(...shuffle(byLength.get(len)));
+  const ordered: WordBankEntry[] = [];
+  for (const len of lengths) ordered.push(...shuffle(byLength.get(len)!));
   return ordered;
 }
 
-function canPlace(grid, word, row, col, orientation) {
+interface WorkingEntry {
+  wordId: string;
+  word: string;
+  orientation: 'H' | 'V';
+  row: number;
+  col: number;
+  length: number;
+}
+
+function canPlace(
+  grid: Map<string, string>,
+  word: string,
+  row: number,
+  col: number,
+  orientation: 'H' | 'V'
+): { intersections: number } | null {
   const len = word.length;
   const dr = orientation === 'V' ? 1 : 0;
   const dc = orientation === 'H' ? 1 : 0;
@@ -153,11 +103,11 @@ function canPlace(grid, word, row, col, orientation) {
   return { intersections };
 }
 
-function candidatePositions(word, placedEntries) {
-  const candidates = new Map(); // "row,col,orientation" -> true
-  const list = [];
+function candidatePositions(word: string, placedEntries: WorkingEntry[]) {
+  const candidates = new Map<string, true>();
+  const list: { row: number; col: number; orientation: 'H' | 'V' }[] = [];
   for (const entry of placedEntries) {
-    const perpendicular = entry.orientation === 'H' ? 'V' : 'H';
+    const perpendicular: 'H' | 'V' = entry.orientation === 'H' ? 'V' : 'H';
     for (let j = 0; j < entry.length; j++) {
       const letterAtEntry = entry.word[j];
       for (let i = 0; i < word.length; i++) {
@@ -176,11 +126,21 @@ function candidatePositions(word, placedEntries) {
   return list;
 }
 
-function tryPlaceSubset(subset) {
+function cellsOverlap(entryB: WorkingEntry, row: number, col: number): boolean {
+  const dr = entryB.orientation === 'V' ? 1 : 0;
+  const dc = entryB.orientation === 'H' ? 1 : 0;
+  for (let i = 0; i < entryB.length; i++) {
+    const r = entryB.row + dr * i;
+    const c = entryB.col + dc * i;
+    if (r === row && c === col) return true;
+  }
+  return false;
+}
+
+function tryPlaceSubset(subset: WordBankEntry[]): { placedEntries: WorkingEntry[] } | null {
   const words = orderWords(subset);
-  const grid = new Map();
-  const placedEntries = [];
-  const discarded = [];
+  const grid = new Map<string, string>();
+  const placedEntries: WorkingEntry[] = [];
 
   const first = words[0];
   const startRow = 0;
@@ -201,17 +161,15 @@ function tryPlaceSubset(subset) {
     const bankEntry = words[idx];
     const word = bankEntry.answer;
     const candidates = candidatePositions(word, placedEntries);
-    let best = null;
+    let best: { row: number; col: number; orientation: 'H' | 'V'; result: { intersections: number } } | null = null;
     for (const cand of candidates) {
       const result = canPlace(grid, word, cand.row, cand.col, cand.orientation);
       if (result && (!best || result.intersections > best.result.intersections)) {
         best = { ...cand, result };
       }
     }
-    if (!best) {
-      discarded.push(bankEntry.id);
-      continue;
-    }
+    if (!best) continue; // no se pudo ubicar, se descarta del puzzle
+
     for (let i = 0; i < word.length; i++) {
       const r = best.orientation === 'V' ? best.row + i : best.row;
       const c = best.orientation === 'H' ? best.col + i : best.col;
@@ -236,7 +194,7 @@ function tryPlaceSubset(subset) {
       const r = entry.row + dr * i;
       const c = entry.col + dc * i;
       const sharedWith = placedEntries.some(
-        (other) => other !== entry && other.orientation !== entry.orientation && cellsOverlap(entry, other, r, c)
+        (other) => other !== entry && other.orientation !== entry.orientation && cellsOverlap(other, r, c)
       );
       if (sharedWith) {
         hasCrossing = true;
@@ -248,21 +206,10 @@ function tryPlaceSubset(subset) {
 
   if (placedEntries.length < MIN_ENTRIES_IN_PUZZLE) return null;
 
-  return { placedEntries, grid };
+  return { placedEntries };
 }
 
-function cellsOverlap(entryA, entryB, row, col) {
-  const dr = entryB.orientation === 'V' ? 1 : 0;
-  const dc = entryB.orientation === 'H' ? 1 : 0;
-  for (let i = 0; i < entryB.length; i++) {
-    const r = entryB.row + dr * i;
-    const c = entryB.col + dc * i;
-    if (r === row && c === col) return true;
-  }
-  return false;
-}
-
-function finalizePuzzle(id, placedEntries) {
+function finalizePuzzle(id: string, placedEntries: WorkingEntry[]): StructuralPuzzle {
   let minRow = Infinity;
   let minCol = Infinity;
   let maxRow = -Infinity;
@@ -285,8 +232,8 @@ function finalizePuzzle(id, placedEntries) {
   }));
 
   // Numeración: recorre la grilla fila por fila, columna por columna.
-  const startPoints = new Map(); // "r,c" -> number
-  const sortedByPosition = [...shifted].sort((a, b) => (a.row - b.row) || (a.col - b.col));
+  const startPoints = new Map<string, number>();
+  const sortedByPosition = [...shifted].sort((a, b) => a.row - b.row || a.col - b.col);
   let counter = 1;
   for (const entry of sortedByPosition) {
     const posKey = key(entry.row, entry.col);
@@ -295,11 +242,11 @@ function finalizePuzzle(id, placedEntries) {
     }
   }
 
-  const cellIndex = {};
-  const entries = shifted.map((entry) => {
+  const cellIndex: Record<string, string[]> = {};
+  const entries: StructuralEntry[] = shifted.map((entry) => {
     const dr = entry.orientation === 'V' ? 1 : 0;
     const dc = entry.orientation === 'H' ? 1 : 0;
-    const cellRefs = [];
+    const cellRefs: { row: number; col: number }[] = [];
     for (let i = 0; i < entry.length; i++) {
       const r = entry.row + dr * i;
       const c = entry.col + dc * i;
@@ -310,7 +257,7 @@ function finalizePuzzle(id, placedEntries) {
     }
     return {
       wordId: entry.wordId,
-      number: startPoints.get(key(entry.row, entry.col)),
+      number: startPoints.get(key(entry.row, entry.col))!,
       orientation: entry.orientation,
       row: entry.row,
       col: entry.col,
@@ -328,51 +275,15 @@ function finalizePuzzle(id, placedEntries) {
   };
 }
 
-function generatePuzzle(bank, puzzleId, acceptedIdSets) {
+// Fail loud: si no logra un puzzle válido en los intentos permitidos, devuelve null. El caller
+// (worker/src/room.ts) traduce esto a un 500 — nunca se sirve un puzzle roto.
+export function generatePuzzle(bank: WordBankEntry[], puzzleId: string): StructuralPuzzle | null {
   for (let attempt = 0; attempt < SUBSET_ATTEMPTS_PER_PUZZLE; attempt++) {
     const subset = sampleSubset(bank);
-    if (!subsetIsDiverseEnough(subset, acceptedIdSets)) continue;
-
     for (let placeAttempt = 0; placeAttempt < PLACEMENT_ATTEMPTS_PER_SUBSET; placeAttempt++) {
       const placement = tryPlaceSubset(subset);
-      if (placement) {
-        acceptedIdSets.push(new Set(subset.map((w) => w.id)));
-        return finalizePuzzle(puzzleId, placement.placedEntries);
-      }
+      if (placement) return finalizePuzzle(puzzleId, placement.placedEntries);
     }
   }
   return null;
 }
-
-function main() {
-  const bank = loadWordBank(args.bank);
-  if (!Number.isInteger(args.count) || args.count < 1) {
-    fail(`--count debe ser un entero positivo (recibido: ${args.count})`);
-  }
-
-  const outDir = path.resolve(repoRoot, args.out);
-  mkdirSync(outDir, { recursive: true });
-
-  const acceptedIdSets = [];
-  const puzzleIds = [];
-
-  for (let n = 1; n <= args.count; n++) {
-    const puzzleId = `puzzle-${String(n).padStart(2, '0')}`;
-    const puzzle = generatePuzzle(bank, puzzleId, acceptedIdSets);
-    if (!puzzle) {
-      fail(
-        `no se pudo generar un puzzle diverso y válido para "${puzzleId}" tras ${SUBSET_ATTEMPTS_PER_PUZZLE} intentos. ` +
-          `El banco de palabras es insuficiente para producir ${args.count} puzzles diversos (>=${MIN_SUBSET} palabras, <${JACCARD_THRESHOLD * 100}% similitud, >=${MIN_ENTRIES_IN_PUZZLE} entradas cruzadas). Agregá más palabras al banco.`
-      );
-    }
-    writeFileSync(path.join(outDir, `${puzzleId}.json`), JSON.stringify(puzzle, null, 2));
-    puzzleIds.push(puzzleId);
-    console.log(`[generate-puzzles] ${puzzleId}: ${puzzle.entries.length} entradas, grilla ${puzzle.rows}x${puzzle.cols}`);
-  }
-
-  const manifest = { puzzleIds };
-  writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  console.log(`[generate-puzzles] listo: ${puzzleIds.length} puzzles en ${outDir}`);
-}
-
-main();

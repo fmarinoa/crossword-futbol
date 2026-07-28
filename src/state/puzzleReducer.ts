@@ -1,10 +1,12 @@
-import type { Puzzle, WordBankEntry } from './types';
-import { checkAnswer } from './validator';
+import type { Puzzle, RevealedCell } from './types';
 
 export type Action =
+  | { type: 'HYDRATE'; puzzle: Puzzle; solvedEntryIds: string[]; revealedCells: RevealedCell[] }
   | { type: 'SELECT_ENTRY'; entryId: string }
-  | { type: 'SUBMIT_ANSWER'; entryId: string; value: string }
-  | { type: 'DESELECT' };
+  | { type: 'DESELECT' }
+  | { type: 'SUBMIT_ANSWER_START'; entryId: string }
+  | { type: 'SUBMIT_ANSWER_SUCCESS'; entryId: string; correct: boolean; revealedCells?: RevealedCell[] }
+  | { type: 'SUBMIT_ANSWER_FAILURE'; message: string };
 
 export interface PuzzleState {
   puzzle: Puzzle;
@@ -12,6 +14,14 @@ export interface PuzzleState {
   revealedCells: Map<string, string>;
   activeEntryId: string | null;
   lastSubmissionWasWrong: boolean;
+  submitting: boolean;
+  submitError: string | null;
+}
+
+function toRevealedMap(cells: RevealedCell[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const cell of cells) map.set(`${cell.row},${cell.col}`, cell.letter);
+  return map;
 }
 
 export function createInitialState(puzzle: Puzzle): PuzzleState {
@@ -21,53 +31,72 @@ export function createInitialState(puzzle: Puzzle): PuzzleState {
     revealedCells: new Map(),
     activeEntryId: null,
     lastSubmissionWasWrong: false,
+    submitting: false,
+    submitError: null,
   };
 }
 
-// El reducer necesita el banco de palabras (clue + respuesta) para validar SUBMIT_ANSWER,
-// así que se crea vía factory que lo cierra sobre bankById.
-export function createPuzzleReducer(bankById: Map<string, WordBankEntry>) {
-  return function puzzleReducer(state: PuzzleState, action: Action): PuzzleState {
-    switch (action.type) {
-      case 'SELECT_ENTRY': {
-        if (state.solvedEntryIds.has(action.entryId)) return state;
-        return { ...state, activeEntryId: action.entryId, lastSubmissionWasWrong: false };
-      }
-
-      case 'DESELECT': {
-        if (state.activeEntryId === null && !state.lastSubmissionWasWrong) return state;
-        return { ...state, activeEntryId: null, lastSubmissionWasWrong: false };
-      }
-
-      case 'SUBMIT_ANSWER': {
-        const entry = state.puzzle.entries.find((e) => e.wordId === action.entryId);
-        const bankEntry = bankById.get(action.entryId);
-        if (!entry || !bankEntry) return state;
-
-        const isCorrect = checkAnswer(action.value, entry, bankEntry);
-        if (!isCorrect) {
-          return { ...state, lastSubmissionWasWrong: true };
-        }
-
-        const solvedEntryIds = new Set(state.solvedEntryIds);
-        solvedEntryIds.add(entry.wordId);
-
-        const revealedCells = new Map(state.revealedCells);
-        entry.cellRefs.forEach((cell, i) => {
-          revealedCells.set(`${cell.row},${cell.col}`, bankEntry.answer[i]);
-        });
-
-        return {
-          ...state,
-          solvedEntryIds,
-          revealedCells,
-          activeEntryId: null,
-          lastSubmissionWasWrong: false,
-        };
-      }
-
-      default:
-        return state;
+export function puzzleReducer(state: PuzzleState, action: Action): PuzzleState {
+  switch (action.type) {
+    case 'HYDRATE': {
+      return {
+        puzzle: action.puzzle,
+        solvedEntryIds: new Set(action.solvedEntryIds),
+        revealedCells: toRevealedMap(action.revealedCells),
+        activeEntryId: null,
+        lastSubmissionWasWrong: false,
+        submitting: false,
+        submitError: null,
+      };
     }
-  };
+
+    case 'SELECT_ENTRY': {
+      if (state.solvedEntryIds.has(action.entryId)) return state;
+      return { ...state, activeEntryId: action.entryId, lastSubmissionWasWrong: false, submitError: null };
+    }
+
+    case 'DESELECT': {
+      if (state.activeEntryId === null && !state.lastSubmissionWasWrong && !state.submitError) return state;
+      return { ...state, activeEntryId: null, lastSubmissionWasWrong: false, submitError: null };
+    }
+
+    case 'SUBMIT_ANSWER_START': {
+      if (state.activeEntryId !== action.entryId) return state;
+      return { ...state, submitting: true, submitError: null };
+    }
+
+    case 'SUBMIT_ANSWER_SUCCESS': {
+      if (state.activeEntryId !== action.entryId) return state;
+
+      if (!action.correct) {
+        return { ...state, submitting: false, lastSubmissionWasWrong: true };
+      }
+
+      const solvedEntryIds = new Set(state.solvedEntryIds);
+      solvedEntryIds.add(action.entryId);
+
+      const revealedCells = new Map(state.revealedCells);
+      for (const cell of action.revealedCells ?? []) {
+        revealedCells.set(`${cell.row},${cell.col}`, cell.letter);
+      }
+
+      return {
+        ...state,
+        solvedEntryIds,
+        revealedCells,
+        activeEntryId: null,
+        lastSubmissionWasWrong: false,
+        submitting: false,
+        submitError: null,
+      };
+    }
+
+    case 'SUBMIT_ANSWER_FAILURE': {
+      // Error de red/servidor: distinto de "respuesta incorrecta", no dispara el shake.
+      return { ...state, submitting: false, submitError: action.message };
+    }
+
+    default:
+      return state;
+  }
 }

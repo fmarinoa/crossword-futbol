@@ -1,23 +1,25 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { PlacedEntry, WordBankEntry, Rect } from '../state/types';
+import type { PlacedEntry, Rect } from '../state/types';
 import './ZoomOverlay.css';
 
 interface ZoomOverlayProps {
   entry: PlacedEntry;
-  bankEntry: WordBankEntry;
   revealedCells: Map<string, string>;
   initialRect: Rect | null;
   wasWrong: boolean;
+  submitting: boolean;
+  submitError: string | null;
   onSubmit: (value: string) => void;
   onClose: () => void;
 }
 
 export default function ZoomOverlay({
   entry,
-  bankEntry,
   revealedCells,
   initialRect,
   wasWrong,
+  submitting,
+  submitError,
   onSubmit,
   onClose,
 }: ZoomOverlayProps) {
@@ -83,7 +85,7 @@ export default function ZoomOverlay({
   }
 
   function handleChange(index: number, raw: string) {
-    if (prefilled[index] !== null) return;
+    if (prefilled[index] !== null || submitting) return;
     const char = raw.slice(-1).toUpperCase();
     setLetterAt(index, char);
     if (char) {
@@ -114,7 +116,7 @@ export default function ZoomOverlay({
         inputRefs.current[prev]?.focus();
       }
     } else if (e.key === 'Enter') {
-      handleSubmit();
+      if (!submitting) handleSubmit();
     } else if (e.key === 'ArrowRight') {
       const next = nextEditableIndex(index);
       if (next !== -1) inputRefs.current[next]?.focus();
@@ -147,7 +149,7 @@ export default function ZoomOverlay({
         <p className="zoom-panel__meta">
           {entry.number} · {orientationLabel}
         </p>
-        <p className="zoom-panel__clue">{bankEntry.clue}</p>
+        <p className="zoom-panel__clue">{entry.clue}</p>
 
         <div className="zoom-panel__boxes">
           {entry.cellRefs.map((_, i) => (
@@ -159,7 +161,7 @@ export default function ZoomOverlay({
               className={`zoom-panel__box ${prefilled[i] !== null ? 'zoom-panel__box--locked' : ''}`}
               value={letters[i]}
               maxLength={1}
-              disabled={prefilled[i] !== null}
+              disabled={prefilled[i] !== null || submitting}
               onChange={(e) => handleChange(i, e.target.value)}
               onKeyDown={(e) => handleKeyDown(i, e)}
               inputMode="text"
@@ -170,9 +172,10 @@ export default function ZoomOverlay({
         </div>
 
         {wasWrong && <p className="zoom-panel__feedback">Respuesta incorrecta, probá de nuevo</p>}
+        {submitError && <p className="zoom-panel__feedback">No se pudo enviar, reintentá ({submitError})</p>}
 
-        <button type="button" className="zoom-panel__submit" onClick={handleSubmit}>
-          Confirmar
+        <button type="button" className="zoom-panel__submit" onClick={handleSubmit} disabled={submitting}>
+          {submitting ? 'Enviando…' : 'Confirmar'}
         </button>
       </div>
     </div>

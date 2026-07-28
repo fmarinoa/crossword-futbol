@@ -4,58 +4,48 @@ Crucigrama web de categoría única "futbolera". El tablero se muestra colapsado
 una entrada se hace zoom, se muestra la pista, y al acertar se revelan las letras (incluidas las
 celdas compartidas con entradas cruzadas).
 
-SPA estática (React + Vite), sin backend. Los puzzles se generan algorítmicamente en build time,
-no en el navegador.
+React + Vite (frontend) + Cloudflare Workers/Durable Objects (backend). Cada partida vive en una
+"sala" (`/room/<id>`) con un puzzle único generado dinámicamente en el servidor y progreso
+persistente. Por ahora las salas son de un solo jugador: el id vive en la URL/localStorage por
+conveniencia, sin auth ni sync entre dispositivos.
 
 ## Desarrollo
 
+Dos procesos en paralelo:
+
 ```bash
 pnpm install
-pnpm run dev
+pnpm run dev          # vite --host, puerto 5173
+pnpm run worker:dev     # wrangler dev, puerto 8787 (API + Durable Object)
 ```
 
-## Generar puzzles
+`vite.config.ts` proxea `/api/*` hacia `localhost:8787`, así que basta con abrir `localhost:5173`.
 
-Los puzzles estáticos (`public/puzzles/puzzle-NN.json` + `manifest.json`) se generan a partir de
-`data/word-bank.json` con:
+## Word bank
+
+`data/word-bank.json` es la fuente de verdad de palabras/pistas, editada a mano. Cada entrada:
+`{ id, answer, clue, category }`, con `answer` ya normalizado (MAYÚSCULAS, sin tildes ni espacios).
+Solo lo importa el Worker (`worker/src/room.ts`) — el cliente nunca recibe el campo `answer`, la
+validación de respuestas corre 100% server-side.
+
+## Build y deploy
 
 ```bash
-node scripts/generate-puzzles.mjs
+pnpm run build     # tsc -b && vite build
+pnpm run deploy     # build + wrangler deploy
 ```
 
-Flags opcionales:
-
-```bash
-node scripts/generate-puzzles.mjs --count=10 --out=public/puzzles --bank=data/word-bank.json
-```
-
-El script termina con exit code distinto de 0 si no logra producir puzzles válidos y diversos
-(por banco de palabras insuficiente). Nunca falla en runtime frente al usuario.
-
-Para agregar palabras, editar `data/word-bank.json` (respuestas en MAYÚSCULAS, sin tildes ni
-espacios) y volver a correr el generador.
-
-## Build
-
-```bash
-pnpm run build
-```
-
-Corre `tsc -b` y `vite build`. Recordá correr el generador de puzzles antes de deployar si
-cambiaste el banco de palabras — el build de Vite no regenera `public/puzzles/` automáticamente.
-
-## Deploy
-
-SPA estática: sirve el contenido de `dist/` en Netlify, Vercel, GitHub Pages o cualquier hosting
-estático.
+Un solo Worker sirve todo bajo el mismo dominio: assets estáticos (`dist/`) para todo lo que no
+matchee `/api/*`, y la API + Durable Object `Room` para `/api/*`. Sin CORS ni en dev ni en prod.
 
 ## Estructura
 
 ```
-data/word-bank.json          banco de palabras editable a mano
-scripts/generate-puzzles.mjs generador de puzzles (build time)
-public/puzzles/               puzzles pre-generados + manifest
-src/state/                    tipos, validador, reducer
-src/components/                GridView (grilla colapsada), ZoomOverlay (pista + respuesta)
-src/utils/rotation.ts          rotación de puzzles vía localStorage
+data/word-bank.json            banco de palabras editable a mano (solo lo usa el Worker)
+wrangler.jsonc                  config del Worker (assets + Durable Object binding)
+worker/src/index.ts              rutas HTTP (crear sala, obtener sala, submit de respuesta)
+worker/src/room.ts               Durable Object Room (storage + validación)
+worker/src/generator.ts           generación de puzzles (subset selection + grid placement)
+src/state/                        tipos, reducer, roomClient (fetch al backend)
+src/components/                    GridView (grilla colapsada), ZoomOverlay (pista + respuesta)
 ```
