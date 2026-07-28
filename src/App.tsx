@@ -33,13 +33,11 @@ const DIFFICULTY_COLOR_VAR: Record<DifficultyChoice, string> = {
   hard: '--diff-hard',
 };
 
-// 'hard' deshabilitado: el banco hoy solo tiene 7 palabras difíciles, por debajo del mínimo
-// para generar un puzzle (ver worker/src/room.ts MIN_POOL_SIZE) — reactivar cuando crezca el banco.
 const DIFFICULTY_OPTIONS: { value: DifficultyChoice; label: string; disabled?: boolean }[] = [
   { value: 'mixed', label: 'Mezcla' },
   { value: 'easy', label: 'Fácil' },
   { value: 'medium', label: 'Medio' },
-  { value: 'hard', label: 'Difícil', disabled: true },
+  { value: 'hard', label: 'Difícil' },
 ];
 
 function readRecentRooms(): RecentRoom[] {

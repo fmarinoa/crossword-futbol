@@ -1,7 +1,7 @@
 {
   "name": "crossword-futbol",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "packageManager": "pnpm@11.17.0",
   "engines": {
@@ -24,6 +24,8 @@
     "cf-typegen": "wrangler types",
     "lint": "eslint .",
     "preview": "vite preview",
+    "words:ai": "node --experimental-strip-types scripts/generate-words.ts",
+    "migration:remote": "export CI=true; wrangler d1 migrations apply crossword-futbol-words --remote",
     "commit": "sh -c 'git commit -m \"$(agy -p \"Generate a concise conventional commit message based on this diff, response only in text format, without any extra text or markdown: $(git diff --staged)\")\"'",
     "commit:all": "git add . && npm run commit",
     "pr:create": "gh pr create -t \"$(git branch --show-current)\" -b \"\""
