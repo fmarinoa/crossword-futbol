@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /room/
+
+Sitemap: https://crucigrama.francomarino.dev/sitemap.xml
