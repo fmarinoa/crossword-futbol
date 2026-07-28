@@ -1,10 +1,24 @@
 export { Room } from './room';
 
 import { generateRoomId } from './roomId';
-import type { Env } from './types';
+import { DIFFICULTIES, type Difficulty, type Env } from './types';
 
 const ROOM_ID_PATTERN = /^[a-z0-9]{4,32}$/;
 const MAX_CREATE_ATTEMPTS = 5;
+
+function isDifficulty(value: unknown): value is Difficulty {
+  return typeof value === 'string' && (DIFFICULTIES as string[]).includes(value);
+}
+
+function parseDifficulty(value: unknown): Difficulty | Difficulty[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    if (!value.every(isDifficulty)) throw new Error('invalid difficulty');
+    return value;
+  }
+  if (!isDifficulty(value)) throw new Error('invalid difficulty');
+  return value;
+}
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -23,7 +37,7 @@ export default {
     }
 
     if (parts.length === 2 && request.method === 'POST') {
-      return handleCreateRoom(env);
+      return handleCreateRoom(env, request);
     }
 
     if (parts.length === 3 && request.method === 'GET') {
@@ -38,15 +52,27 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-async function handleCreateRoom(env: Env): Promise<Response> {
+async function handleCreateRoom(env: Env, request: Request): Promise<Response> {
+  let difficulty: Difficulty | Difficulty[] | undefined;
+  try {
+    const body = await request.json().catch(() => ({}));
+    const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).difficulty : undefined;
+    difficulty = parseDifficulty(raw);
+  } catch {
+    return json({ error: 'difficulty inválida' }, { status: 400 });
+  }
+
   for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt++) {
     const roomId = generateRoomId();
     const stub = env.ROOM.getByName(roomId);
     try {
-      const state = await stub.createPuzzle(roomId);
+      const state = await stub.createPuzzle(roomId, difficulty);
       return json(state, { status: 201 });
     } catch (err) {
       if (err instanceof Error && err.message === 'room already exists') continue; // colisión, reintenta
+      if (err instanceof Error && err.message === 'not enough words for requested difficulty') {
+        return json({ error: err.message }, { status: 422 });
+      }
       return json({ error: 'no se pudo generar un puzzle válido' }, { status: 500 });
     }
   }

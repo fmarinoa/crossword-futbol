@@ -13,5 +13,13 @@
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "Room" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "crossword-futbol-words",
+      "database_id": "eb11e8ba-ef94-47a6-a746-e5c0599a6528",
+      "migrations_dir": "migrations"
+    }
+  ]
 }

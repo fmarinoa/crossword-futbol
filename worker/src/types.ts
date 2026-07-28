@@ -1,10 +1,14 @@
 import type { Room } from './room';
 
+export type Difficulty = 'easy' | 'medium' | 'hard';
+export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'medium', 'hard'];
+
 export interface WordBankEntry {
   id: string;
   answer: string;
   clue: string;
   category: string;
+  difficulty: Difficulty;
 }
 
 // Forma estructural de la grilla: sin answer ni clue, se guarda tal cual en el storage del DO.
@@ -62,4 +66,5 @@ export interface SubmitResult {
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
   ASSETS: Fetcher;
+  DB: D1Database;
 }

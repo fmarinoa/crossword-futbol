@@ -1,3 +1,5 @@
+export type Difficulty = 'easy' | 'medium' | 'hard';
+
 export interface PlacedEntry {
   wordId: string;
   number: number;

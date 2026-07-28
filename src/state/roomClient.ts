@@ -1,4 +1,4 @@
-import type { RoomState, SubmitResult } from './types';
+import type { Difficulty, RoomState, SubmitResult } from './types';
 
 function extractErrorMessage(body: unknown, status: number): string {
   if (body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string') {
@@ -18,8 +18,12 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-export function createRoom(): Promise<RoomState> {
-  return fetch('/api/rooms', { method: 'POST' }).then(parseJsonOrThrow<RoomState>);
+export function createRoom(difficulty?: Difficulty | Difficulty[]): Promise<RoomState> {
+  return fetch('/api/rooms', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(difficulty ? { difficulty } : {}),
+  }).then(parseJsonOrThrow<RoomState>);
 }
 
 export async function getRoom(roomId: string): Promise<RoomState | null> {

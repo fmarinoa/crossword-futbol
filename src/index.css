@@ -6,6 +6,11 @@
   --foul-red: #c0392b;
   --ink: #08150d;
 
+  --diff-mixed: var(--flood-gold);
+  --diff-easy: #4caf6b;
+  --diff-medium: #e08a3c;
+  --diff-hard: var(--foul-red);
+
   --font-display: 'Oswald', 'Arial Narrow', sans-serif;
   --font-body: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
 

@@ -1,42 +1,104 @@
 import { useCallback, useEffect, useReducer, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import GridView from './components/GridView';
 import ZoomOverlay from './components/ZoomOverlay';
 import { createInitialState, puzzleReducer } from './state/puzzleReducer';
 import { createRoom, getRoom, submitAnswer } from './state/roomClient';
-import type { Rect, RoomState } from './state/types';
+import type { Difficulty, Rect, RoomState } from './state/types';
 import './App.css';
 
 const ROOM_HISTORY_KEY = 'crossword-futbol:recent-rooms';
 const MAX_RECENT_ROOMS = 5;
 const ROOM_PATH_PATTERN = /^\/room\/([a-zA-Z0-9_-]+)\/?$/;
 
-function readRecentRooms(): string[] {
+type DifficultyChoice = Difficulty | 'mixed';
+
+interface RecentRoom {
+  roomId: string;
+  difficulty: DifficultyChoice;
+  completed: boolean;
+}
+
+function isDifficultyChoice(value: unknown): value is DifficultyChoice {
+  return value === 'mixed' || value === 'easy' || value === 'medium' || value === 'hard';
+}
+
+// Var CSS por dificultad, definida en index.css — reusada tanto por el picker de creación
+// como por el color de las salas recientes. 'mixed' cubre además salas sin dificultad
+// registrada (visitadas por link, nunca creadas desde este navegador).
+const DIFFICULTY_COLOR_VAR: Record<DifficultyChoice, string> = {
+  mixed: '--diff-mixed',
+  easy: '--diff-easy',
+  medium: '--diff-medium',
+  hard: '--diff-hard',
+};
+
+// 'hard' deshabilitado: el banco hoy solo tiene 7 palabras difíciles, por debajo del mínimo
+// para generar un puzzle (ver worker/src/room.ts MIN_POOL_SIZE) — reactivar cuando crezca el banco.
+const DIFFICULTY_OPTIONS: { value: DifficultyChoice; label: string; disabled?: boolean }[] = [
+  { value: 'mixed', label: 'Mezcla' },
+  { value: 'easy', label: 'Fácil' },
+  { value: 'medium', label: 'Medio' },
+  { value: 'hard', label: 'Difícil', disabled: true },
+];
+
+function readRecentRooms(): RecentRoom[] {
   try {
     const raw = localStorage.getItem(ROOM_HISTORY_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const rooms: RecentRoom[] = [];
+    for (const entry of parsed) {
+      if (typeof entry === 'string') {
+        rooms.push({ roomId: entry, difficulty: 'mixed', completed: false });
+      } else if (entry && typeof entry === 'object' && typeof (entry as { roomId?: unknown }).roomId === 'string') {
+        const e = entry as { roomId: string; difficulty?: unknown; completed?: unknown };
+        rooms.push({
+          roomId: e.roomId,
+          difficulty: isDifficultyChoice(e.difficulty) ? e.difficulty : 'mixed',
+          completed: e.completed === true,
+        });
+      }
+    }
+    return rooms;
   } catch {
     return [];
   }
 }
 
-function rememberRoom(roomId: string) {
+function writeRecentRooms(rooms: RecentRoom[]) {
   try {
-    const rest = readRecentRooms().filter((id) => id !== roomId);
-    localStorage.setItem(ROOM_HISTORY_KEY, JSON.stringify([roomId, ...rest].slice(0, MAX_RECENT_ROOMS)));
+    localStorage.setItem(ROOM_HISTORY_KEY, JSON.stringify(rooms.slice(0, MAX_RECENT_ROOMS)));
   } catch {
     // localStorage no disponible (modo privado, etc.) — la lista simplemente no persiste.
   }
 }
 
+// difficulty se pasa explícito al crear una sala nueva; al resumir una ya conocida (link,
+// lista de recientes) se preserva lo que ya sabíamos de ella, y 'mixed' si es la primera vez
+// que la vemos en este navegador.
+function rememberRoom(roomId: string, difficulty?: DifficultyChoice) {
+  const existing = readRecentRooms();
+  const prev = existing.find((r) => r.roomId === roomId);
+  const rest = existing.filter((r) => r.roomId !== roomId);
+  writeRecentRooms([
+    { roomId, difficulty: difficulty ?? prev?.difficulty ?? 'mixed', completed: prev?.completed ?? false },
+    ...rest,
+  ]);
+}
+
 function forgetRoom(roomId: string) {
-  try {
-    localStorage.setItem(ROOM_HISTORY_KEY, JSON.stringify(readRecentRooms().filter((id) => id !== roomId)));
-  } catch {
-    // no-op
-  }
+  writeRecentRooms(readRecentRooms().filter((r) => r.roomId !== roomId));
+}
+
+function markRoomCompleted(roomId: string) {
+  const rooms = readRecentRooms();
+  const idx = rooms.findIndex((r) => r.roomId === roomId);
+  if (idx === -1 || rooms[idx].completed) return;
+  const next = [...rooms];
+  next[idx] = { ...next[idx], completed: true };
+  writeRecentRooms(next);
 }
 
 type Screen = { type: 'home' } | { type: 'room'; roomId: string };
@@ -105,20 +167,23 @@ export default function App() {
 }
 
 function Home({ onEnterRoom }: { onEnterRoom: (roomId: string) => void }) {
-  const [creating, setCreating] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [creating, setCreating] = useState<DifficultyChoice | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const recentRooms = readRecentRooms();
+  // Ordenar recientes con las completadas al final (orden estable: preserva la recencia dentro
+  // de cada grupo). No reactivo dentro de la vida de Home — mismo patrón que ya tenía el código.
+  const recentRooms = [...readRecentRooms()].sort((a, b) => Number(a.completed) - Number(b.completed));
 
-  async function handleCreate() {
-    setCreating(true);
+  async function handleCreate(choice: DifficultyChoice) {
+    setCreating(choice);
     setError(null);
     try {
-      const room = await createRoom();
-      rememberRoom(room.roomId);
+      const room = await createRoom(choice === 'mixed' ? undefined : choice);
+      rememberRoom(room.roomId, choice);
       onEnterRoom(room.roomId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'error desconocido');
-      setCreating(false);
+      setCreating(null);
     }
   }
 
@@ -128,23 +193,55 @@ function Home({ onEnterRoom }: { onEnterRoom: (roomId: string) => void }) {
         <p className="cw-header__subtitle">Un crucigrama nuevo en cada sala</p>
       </Header>
       <main className="cw-main">
-        <button type="button" className="cw-home-actions__primary" onClick={handleCreate} disabled={creating}>
-          {creating ? 'Creando…' : 'Nueva sala'}
-        </button>
+        {!pickerOpen && (
+          <button type="button" className="cw-home-actions__primary" onClick={() => setPickerOpen(true)}>
+            Nueva sala
+          </button>
+        )}
+
+        {pickerOpen && (
+          <div className="cw-difficulty-picker" role="radiogroup" aria-label="Dificultad">
+            {DIFFICULTY_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={creating === opt.value}
+                style={{ '--chip-color': `var(${DIFFICULTY_COLOR_VAR[opt.value]})` } as CSSProperties}
+                className={`cw-difficulty-picker__option${
+                  creating === opt.value ? ' cw-difficulty-picker__option--loading' : ''
+                }`}
+                onClick={() => handleCreate(opt.value)}
+                disabled={opt.disabled || creating !== null}
+                title={opt.disabled ? 'Próximamente: hacen falta más palabras difíciles' : undefined}
+              >
+                {creating === opt.value ? 'Creando…' : opt.label}
+              </button>
+            ))}
+          </div>
+        )}
         {error && <p className="cw-status cw-status--error">No se pudo crear la sala: {error}</p>}
 
         {recentRooms.length > 0 && (
           <div className="cw-recent-rooms">
             <p className="cw-recent-rooms__label">Salas recientes</p>
             <ul className="cw-recent-rooms__list">
-              {recentRooms.map((roomId) => (
-                <li key={roomId}>
+              {recentRooms.map((room) => (
+                <li key={room.roomId}>
                   <button
                     type="button"
-                    className="cw-recent-rooms__item"
-                    onClick={() => onEnterRoom(roomId)}
+                    className={`cw-recent-rooms__item${
+                      room.completed ? ' cw-recent-rooms__item--completed' : ''
+                    }`}
+                    style={{ '--chip-color': `var(${DIFFICULTY_COLOR_VAR[room.difficulty]})` } as CSSProperties}
+                    onClick={() => onEnterRoom(room.roomId)}
                   >
-                    Sala {roomId}
+                    <span>Sala {room.roomId}</span>
+                    {room.completed && (
+                      <span className="cw-recent-rooms__trophy" aria-label="completada">
+                        🏆
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -223,6 +320,10 @@ function PuzzleGame({ room }: { room: RoomState }) {
   const totalEntries = puzzle.entries.length;
   const solvedCount = state.solvedEntryIds.size;
   const isComplete = solvedCount === totalEntries;
+
+  useEffect(() => {
+    if (isComplete) markRoomCompleted(room.roomId);
+  }, [isComplete, room.roomId]);
 
   function handleSelectEntry(entryId: string) {
     const cells = Array.from(document.querySelectorAll<HTMLElement>(`[data-entries~="${entryId}"]`));
